@@ -1,0 +1,176 @@
+pipeline:
+  name: Approval Notification - Promoted Version Demo
+  identifier: approval_notif_promoted_version_demo
+  projectIdentifier: Kyriba
+  orgIdentifier: default
+  description: |
+    Answers the question "can we customise the auto-generated approval notification
+    and add the promoted version to it?" - using CUSTOM NOTIFICATION TEMPLATES.
+
+    There is no "Approval Approved/Rejected" notification event, so the approval lifecycle is
+    mapped onto the events that do exist, with ONE TEMPLATE PER OUTCOME:
+      WaitingForUserAction                      -> KyribaApprovalRequestedEmail (amber)
+      StageSuccess  on stage promotion_approval -> KyribaApprovalApprovedEmail  (green)
+      StageFailed   on stage promotion_approval -> KyribaApprovalRejectedEmail  (red)
+    A rejection fails the HarnessApproval step, which fails the stage, which is what makes the
+    StageFailed mapping reliable.
+
+    WHY ONE TEMPLATE PER OUTCOME, not one template with a ternary:
+    a ternary on <+notification.eventType> was tried first and it always took the false branch -
+    an approved stage produced a REJECTED card. The rule's event already tells you the outcome,
+    so hardcode it per template and keep the conditional logic out of the body entirely.
+
+    GOTCHAS BAKED INTO THESE TEMPLATES:
+      - no space before a hash: " #d0d7de" starts a YAML comment and silently truncates the
+        whole body, so the mail arrives blank. All colours use rgb().
+      - no colon-space anywhere in the body: same class of problem. The fact tables use two
+        table cells instead of "Label: value".
+
+    HOW TO DEMO:
+      1. Run with the default promotedVersion / serviceName / targetEnv.
+      2. Stage 1 prints the promotion candidate.
+      3. Stage 2 pauses -> amber "Promotion awaiting approval" mail with the version in it.
+      4. Approve -> green "Promotion APPROVED" mail. Reject -> red "Promotion REJECTED" mail.
+  tags: {}
+  variables:
+    - name: promotedVersion
+      type: String
+      description: Version/artifact tag being promoted. Normally comes from a trigger payload or an artifact output.
+      required: false
+      value: <+input>.default(2026.11.3-rc4)
+    - name: serviceName
+      type: String
+      description: Service being promoted.
+      required: false
+      value: <+input>.default(payments-api)
+    - name: targetEnv
+      type: String
+      description: Target environment for the promotion.
+      required: false
+      value: <+input>.default(PROD-EU1)
+  stages:
+    - stage:
+        name: Resolve Promotion
+        identifier: resolve_promotion
+        type: CI
+        spec:
+          cloneCodebase: false
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Print Promotion Candidate
+                  identifier: print_promotion_candidate
+                  spec:
+                    shell: Sh
+                    command: |
+                      echo "Service          : <+pipeline.variables.serviceName>"
+                      echo "Promoted version : <+pipeline.variables.promotedVersion>"
+                      echo "Target env       : <+pipeline.variables.targetEnv>"
+                      echo "Build            : <+pipeline.sequenceId>"
+    - stage:
+        name: Promotion Approval
+        identifier: promotion_approval
+        type: Approval
+        spec:
+          execution:
+            steps:
+              - step:
+                  name: Approve Promotion
+                  identifier: approve_promotion
+                  type: HarnessApproval
+                  timeout: 1d
+                  spec:
+                    approvalMessage: |-
+                      Production promotion approval requested.
+
+                        Service           : <+pipeline.variables.serviceName>
+                        PROMOTED VERSION  : <+pipeline.variables.promotedVersion>
+                        Target environment: <+pipeline.variables.targetEnv>
+                        Build             : <+pipeline.sequenceId>
+                        Triggered by      : <+pipeline.triggeredBy.name>
+                    includePipelineExecutionHistory: true
+                    isAutoRejectEnabled: false
+                    approvers:
+                      userGroups:
+                        - _project_all_users
+                      minimumCount: 1
+                      disallowPipelineExecutor: false
+                    approverInputs: []
+    - stage:
+        name: Post Approval
+        identifier: post_approval
+        type: CI
+        spec:
+          cloneCodebase: false
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Echo Approval Outcome
+                  identifier: echo_approval_outcome
+                  spec:
+                    shell: Sh
+                    command: |
+                      echo "Version <+pipeline.variables.promotedVersion> of <+pipeline.variables.serviceName> was approved for <+pipeline.variables.targetEnv>"
+                      echo "Approved by : <+pipeline.stages.promotion_approval.spec.execution.steps.approve_promotion.output.approvalActivities[0].user.name>"
+                      echo "Action      : <+pipeline.stages.promotion_approval.spec.execution.steps.approve_promotion.output.approvalActivities[0].action>"
+  notificationRules:
+    - identifier: approval_requested
+      name: approval requested
+      pipelineEvents:
+        - type: WaitingForUserAction
+      template:
+        templateRef: KyribaApprovalRequestedEmail
+        versionLabel: v1
+      notificationMethod:
+        type: Email
+        spec:
+          userGroups: []
+          recipients:
+            - REPLACE_ME@example.com
+      enabled: true
+    - identifier: promotion_approved
+      name: promotion approved
+      pipelineEvents:
+        - type: StageSuccess
+          forStages:
+            - promotion_approval
+      template:
+        templateRef: KyribaApprovalApprovedEmail
+        versionLabel: v1
+      notificationMethod:
+        type: Email
+        spec:
+          userGroups: []
+          recipients:
+            - REPLACE_ME@example.com
+      enabled: true
+    - identifier: promotion_rejected
+      name: promotion rejected
+      pipelineEvents:
+        - type: StageFailed
+          forStages:
+            - promotion_approval
+      template:
+        templateRef: KyribaApprovalRejectedEmail
+        versionLabel: v1
+      notificationMethod:
+        type: Email
+        spec:
+          userGroups: []
+          recipients:
+            - REPLACE_ME@example.com
+      enabled: true
